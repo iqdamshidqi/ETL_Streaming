@@ -1,17 +1,32 @@
+# ==============================================================================
+# DOCKERFILE PYSPARK STRUCTURED STREAMING (Dockerfile.spark)
+# ==============================================================================
+# Berkas resep untuk membangun image container PySpark Streaming Consumer.
+# Image ini didesain agar ringan dan mandiri (dapat berjalan 100% OFFLINE di kelas).
+# ==============================================================================
+
+# Menggunakan base image Python 3.9 varian slim yang ringkas dan hemat ruang disk
 FROM python:3.9-slim
 
-# Install Java runtime (default-jre-headless) and procps for PySpark
+# Memasang Java Runtime Environment (default-jre-headless) dan utilitas sistem
+# Catatan Pembelajaran: PySpark memerlukan Java (JVM) untuk menjalankan mesin pemrosesannya.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends default-jre-headless procps curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Menentukan direktori kerja utama di dalam container
 WORKDIR /app
 
-# Install PySpark, psycopg2-binary, and kafka-python-ng
+# Memasang pustaka Python yang diperlukan:
+# - pyspark: Library utama pemrosesan data terdistribusi
+# - psycopg2-binary: Driver PostgreSQL untuk Python
+# - kafka-python-ng & findspark: Integrasi pendukung Kafka dan pencarian path Spark
 RUN pip install --no-cache-dir pyspark==3.5.3 psycopg2-binary==2.9.10 kafka-python-ng findspark
 
-# Pre-fetch Spark Kafka connector & PostgreSQL JDBC driver during image build
-# so the container runs 100% offline without needing internet to download jars!
+# TRIK CERDAS EDUKASI: Pre-fetching file JAR Kafka Connector & PostgreSQL Driver saat Build!
+# Perintah di bawah ini sengaja menginisialisasi SparkSession sesaat saat membuat image
+# agar Spark secara otomatis mengunduh file JAR dari Maven Central dan menyimpannya di cache container.
+# Hasilnya: Ketika siswa menjalankan container di kelas, container TIDAK LAGI membutuhkan internet!
 RUN python3 -c "\
 from pyspark.sql import SparkSession; \
 spark = SparkSession.builder.master('local[1]') \
@@ -19,9 +34,10 @@ spark = SparkSession.builder.master('local[1]') \
     .getOrCreate(); \
 spark.stop()"
 
-# Copy consumer application code and config
+# Menyalin skrip aplikasi PySpark dan file konfigurasi ke dalam container
 COPY spark_streaming.py config.ini ./
 
+# Menyetel environment variable bawaan untuk container
 ENV PYTHONUNBUFFERED=1
 ENV KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 ENV KAFKA_TOPIC=retail_stream
@@ -33,4 +49,5 @@ ENV POSTGRES_PASSWORD=postgrespassword
 ENV POSTGRES_TABLE=retail_transactions
 ENV CHECKPOINT_DIR=temp/checkpoints/docker_stream
 
+# Perintah eksekusi utama saat container dinyalakan
 CMD ["python3", "spark_streaming.py"]

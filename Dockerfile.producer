@@ -1,17 +1,28 @@
+# ==============================================================================
+# DOCKERFILE EVENT PRODUCER SIMULATOR (Dockerfile.producer)
+# ==============================================================================
+# Berkas resep untuk membangun image container simulator kasir e-commerce.
+# Container ini bertugas membaca OnlineRetail.csv dan memancarkan data ke Kafka.
+# ==============================================================================
+
+# Menggunakan base image Python 3.9 slim yang sangat ringan
 FROM python:3.9-slim
 
+# Menentukan direktori kerja di dalam container
 WORKDIR /app
 
-# Install minimal producer dependency
+# Memasang library client Kafka resmi untuk Python
 RUN pip install --no-cache-dir kafka-python
 
-# Copy application files and dataset
+# Menyalin kode simulator, file konfigurasi, dan folder dataset transaksi retail
 COPY producer_simulator.py config.ini ./
 COPY data/ ./data/
 
+# Menyetel environment variable bawaan
 ENV PYTHONUNBUFFERED=1
 ENV KAFKA_BOOTSTRAP_SERVERS=kafka:29092
 ENV KAFKA_TOPIC=retail_stream
 ENV CSV_FILEPATH=./data/OnlineRetail.csv
 
+# Perintah eksekusi utama untuk memulai pemancaran data streaming
 CMD ["python3", "producer_simulator.py"]

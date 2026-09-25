@@ -1,4 +1,18 @@
+# ==============================================================================
+# DAFTAR DEPENDENSI PYTHON (requirements.txt)
+# ==============================================================================
+# Diperlukan jika siswa menjalankan skrip secara langsung di lingkungan lokal
+# (Mode Non-Docker / Hybrid Development).
+# ==============================================================================
+
+# Client Apache Kafka untuk membaca dan mengirim pesan streaming dari Python
 kafka-python>=2.0.2
+
+# Framework komputasi Big Data terdistribusi Apache Spark (versi Python)
 pyspark>=3.2.0
+
+# Driver adapter PostgreSQL untuk komunikasi database dari Python
 psycopg2-binary>=2.9.5
+
+# Pustaka pembantu untuk mendeteksi lokasi instalasi SPARK_HOME secara otomatis
 findspark>=1.4.2

@@ -1,65 +1,103 @@
 #!/usr/bin/env python3
 """
-Streaming Producer Simulator (producer_simulator.py)
-----------------------------------------------------
-Simulates real-time e-commerce retail transactions by streaming rows from
-OnlineRetail.csv into an Apache Kafka topic with dynamic timestamps and realistic
-random delays.
+================================================================================
+EVENT PRODUCER SIMULATOR (producer_simulator.py)
+================================================================================
+Modul ini bertindak sebagai simulator "Mesin Kasir / E-Commerce Store" yang
+mengalirkan data transaksi penjualan secara real-time baris-demi-baris ke
+Apache Kafka.
+
+Alur Kerja:
+1. Membaca dataset CSV (OnlineRetail.csv).
+2. Melakukan normalisasi nama kolom dan struktur data.
+3. Membubuhkan stempel waktu saat ini (event_timestamp / current_timestamp).
+4. Mengubah data menjadi payload JSON.
+5. Mengirimkannya ke Kafka topic dengan interval jeda acak (0.2 - 1.0 detik)
+   untuk meniru perilaku transaksi manusia di dunia nyata.
+================================================================================
 """
 
-import os
-import sys
-import csv
-import json
-import time
-import random
-import argparse
-import logging
-from datetime import datetime, timezone
-from configparser import ConfigParser
+# ==============================================================================
+# 1. IMPORT MODUL & PUSTAKA STANDAR
+# ==============================================================================
+import os                  # Berinteraksi dengan sistem operasi dan environment variables
+import sys                 # Akses sistem interpreter Python (misal untuk sys.exit)
+import csv                 # Membaca berkas format Comma-Separated Values (CSV)
+import json                # Memanipulasi dan menyusun format JavaScript Object Notation (JSON)
+import time                # Mengatur jeda pengiriman data (delay / sleep)
+import random              # Menghasilkan angka acak untuk mensimulasikan latensi natural transaksi
+import argparse            # Menangani parameter argumen baris perintah (CLI arguments)
+import logging             # Menampilkan catatan aktivitas dan status aplikasi secara rapi
+from datetime import datetime, timezone  # Menghasilkan stempel waktu (timestamp) berbasis UTC
+from configparser import ConfigParser    # Membaca konfigurasi dari file eksternal (config.ini)
 
-# Configure logging
+# ==============================================================================
+# 2. KONFIGURASI LOGGING (Pencatatan Aktivitas Terminal)
+# ==============================================================================
+# Mengatur format teks log agar memuat waktu, level (INFO/WARNING/ERROR), label PRODUCER, dan pesan.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] [PRODUCER] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# Inisialisasi logger dengan nama khusus "ProducerSimulator"
 logger = logging.getLogger("ProducerSimulator")
 
 
-
-
-
+# ==============================================================================
+# 3. FUNGSI PEMBACA ENVIRONMENT VARIABLE (.env)
+# ==============================================================================
 def load_env_file(env_path: str = ".env"):
-    """Load key-value pairs from .env into os.environ if present."""
+    """
+    Membaca berkas .env (jika ada) dan memasukkan variabelnya ke dalam sistem (os.environ).
+    Ini memungkinkan pengaturan port atau kredensial tanpa perlu mengubah kode program.
+    """
     if os.path.exists(env_path):
         with open(env_path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
+                # Lewati baris kosong atau baris komentar yang diawali tanda '#'
                 if line and not line.startswith("#") and "=" in line:
                     key, val = line.split("=", 1)
                     key, val = key.strip(), val.strip().strip("'\"")
+                    # Hanya tambahkan jika key belum disetel sebelumnya di lingkungan sistem
                     if key not in os.environ:
                         os.environ[key] = val
 
 
+# ==============================================================================
+# 4. FUNGSI PEMUAT KONFIGURASI PIPELINE
+# ==============================================================================
 def load_configurations(config_path: str = "config.ini"):
-    """Load configuration from config.ini with environment variable fallbacks."""
+    """
+    Memuat konfigurasi Kafka dan jalur dataset dari file config.ini,
+    dengan prioritas fallback ke environment variable (.env) jika tersedia.
+    
+    Variabel Kunci:
+    - topic: Nama antrean / saluran topik di Kafka (default: 'retail_stream').
+    - bootstrap_servers: Alamat host dan port broker Kafka (default: 'localhost:9092').
+    - csv_filepath: Lokasi file data CSV retail (default: './data/OnlineRetail.csv').
+    """
     load_env_file(".env")
     config = ConfigParser()
     if os.path.exists(config_path):
         config.read(config_path)
 
+    # 1. Menentukan nama topik Kafka
     topic = os.getenv(
         "KAFKA_TOPIC",
         config.get("kafka", "topic", fallback="retail_stream")
     )
+    
+    # 2. Menentukan alamat broker Kafka (misal kafka:29092 di Docker atau localhost:9092 di lokal)
     kafka_port = os.getenv("KAFKA_PORT", "9092")
     default_servers = f"localhost:{kafka_port}"
     bootstrap_servers = os.getenv(
         "KAFKA_BOOTSTRAP_SERVERS",
         config.get("kafka", "bootstrap_servers", fallback=default_servers)
     )
+    
+    # 3. Menentukan lokasi file CSV
     csv_filepath = os.getenv(
         "CSV_FILEPATH",
         config.get("kafka", "csv_filepath", fallback="./data/OnlineRetail.csv")
@@ -72,21 +110,31 @@ def load_configurations(config_path: str = "config.ini"):
     }
 
 
+# ==============================================================================
+# 5. FUNGSI VALIDATOR KEBERADAAN DATASET
+# ==============================================================================
 def ensure_dataset_exists(filepath: str):
-    """Check if the dataset exists; if not, generate a realistic sample dataset."""
+    """
+    Memastikan dataset tersedia di komputer siswa.
+    Jika file tidak ditemukan, fungsi ini secara cerdas akan membuat file sampel
+    berisi transaksi contoh sehingga pipeline tetap dapat berjalan tanpa error file missing.
+    """
+    # Jika path default ditemukan, langsung gunakan
     if os.path.exists(filepath):
         return filepath
 
-    # Check alternative common paths
+    # Cek lokasi alternatif yang sering dipakai siswa
     alternatives = ["./data/data.csv", "./OnlineRetail.csv", "data/OnlineRetail.csv"]
     for alt in alternatives:
         if os.path.exists(alt):
-            logger.info(f"Found alternative dataset at: {alt}")
+            logger.info(f"Ditemukan dataset pada jalur alternatif: {alt}")
             return alt
 
-    logger.warning(f"Dataset not found at '{filepath}'. Auto-generating sample retail dataset...")
+    # Jika sama sekali tidak ada, buat folder dan file contoh otomatis
+    logger.warning(f"Dataset tidak ditemukan di '{filepath}'. Membuat sampel dataset ritel otomatis...")
     os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
 
+    # Baris data simulasi awal (memuat transaksi normal dan transaksi retur berawalan 'C')
     sample_rows = [
         ["Invoice", "StockCode", "Description", "Quantity", "InvoiceDate", "Price", "CustomerID", "Country"],
         ["536365", "85123A", "WHITE HANGING HEART T-LIGHT HOLDER", "6", "2026-09-24 08:26:00", "2.55", "17850", "United Kingdom"],
@@ -108,57 +156,91 @@ def ensure_dataset_exists(filepath: str):
         writer = csv.writer(f)
         writer.writerows(sample_rows)
 
-    logger.info(f"Sample dataset successfully created at: {filepath}")
+    logger.info(f"Sampel dataset berhasil dibuat pada: {filepath}")
     return filepath
 
 
+# ==============================================================================
+# 6. FUNGSI INISIALISASI KAFKA PRODUCER DENGAN RETRY LOGIC
+# ==============================================================================
 def create_kafka_producer(bootstrap_servers: str, max_retries: int = 10, retry_delay: int = 3):
-    """Instantiate KafkaProducer with resilient connection retry logic."""
+    """
+    Membangun koneksi ke broker Apache Kafka dengan mekanisme percobaan ulang (retry).
+    
+    Penjelasan Parameter & Logika Syntax:
+    - bootstrap_servers: Daftar broker awal yang dipisahkan koma.
+    - value_serializer: Mengubah data dictionary Python menjadi biner UTF-8.
+      Kafka tidak mengenal tipe data Python; Kafka hanya menerima byte biner!
+      Format: lambda v: json.dumps(v).encode("utf-8")
+    - acks="all": Memastikan broker telah menulis data ke partisi sebelum mengirim konfirmasi balik (guaranteed delivery).
+    - retries=3: Jumlah percobaan kirim ulang internal oleh driver Kafka jika terjadi kendala jaringan sementara.
+    - max_retries: Menghindari error saat container Kafka masih dalam proses booting saat startup.
+    """
     try:
         from kafka import KafkaProducer
     except ImportError:
-        logger.error("kafka-python library not installed! Please run: pip install -r requirements.txt")
+        logger.error("Pustaka kafka-python belum terpasang! Jalankan: pip install -r requirements.txt")
         sys.exit(1)
 
     producer = None
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info(f"Connecting to Kafka at '{bootstrap_servers}' (Attempt {attempt}/{max_retries})...")
+            logger.info(f"Menghubungkan ke Kafka broker di '{bootstrap_servers}' (Percobaan {attempt}/{max_retries})...")
             producer = KafkaProducer(
                 bootstrap_servers=bootstrap_servers.split(","),
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                acks="all",
-                retries=3,
-                request_timeout_ms=15000,
-                api_version=(0, 10, 1),
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),  # Serialisasi objek ke string JSON lalu ke UTF-8 Bytes
+                acks="all",                                                # Tingkat garansi pesan tertinggi
+                retries=3,                                                 # Toleransi gangguan jaringan sementara
+                request_timeout_ms=15000,                                  # Batas tunggu respon broker (15 detik)
+                api_version=(0, 10, 1),                                    # Versi protokol kompatibilitas Kafka
             )
-            logger.info("Successfully connected to Kafka broker!")
+            logger.info("Berhasil terhubung ke Apache Kafka broker!")
             return producer
         except Exception as e:
             if attempt < max_retries:
-                logger.warning(f"Kafka broker not available yet ({e}). Retrying in {retry_delay}s...")
+                logger.warning(f"Broker Kafka belum siap ({e}). Mencoba lagi dalam {retry_delay} detik...")
                 time.sleep(retry_delay)
             else:
-                logger.error(f"Could not connect to Kafka after {max_retries} attempts: {e}")
+                logger.error(f"Gagal terhubung ke Kafka setelah {max_retries} kali percobaan: {e}")
                 raise
     return producer
 
 
+# ==============================================================================
+# 7. FUNGSI NORMALISASI DATA TRANSAKSI
+# ==============================================================================
 def normalize_record(row: dict) -> dict:
-    """Normalize row column keys and map to standard schema."""
-    # Map common variations of column headers
+    """
+    Menyeragamkan kunci nama kolom dari baris CSV mentah menjadi standar yang konsisten,
+    serta menyisipkan stempel waktu aktual (current_timestamp).
+    
+    Penjelasan Logika Syntax:
+    - row.get("Invoice") or row.get("InvoiceNo") or ...:
+      Teknik fallback defensif untuk mengantisipasi perbedaan penamaan header CSV pada berbagai versi dataset.
+    - current_ts = datetime.now(timezone.utc).isoformat():
+      Mencatat waktu persis dalam zona UTC ketika event transaksi ini dipancarkan oleh simulator.
+    """
+    # Mengambil nomor faktur (Invoice / InvoiceNo)
     invoice = row.get("Invoice") or row.get("InvoiceNo") or row.get("invoice") or ""
+    # Mengambil kode barang / StockCode
     stock_code = row.get("StockCode") or row.get("stock_code") or ""
+    # Mengambil deskripsi barang
     description = row.get("Description") or row.get("description") or ""
+    # Mengambil jumlah unit belanja
     quantity = row.get("Quantity") or row.get("quantity") or "0"
+    # Mengambil tanggal faktur dari dataset
     invoice_date = row.get("InvoiceDate") or row.get("invoice_date") or ""
+    # Mengambil harga satuan barang
     price = row.get("Price") or row.get("UnitPrice") or row.get("price") or "0.0"
+    # Mengambil ID pelanggan
     customer_id = row.get("CustomerID") or row.get("customer_id") or ""
+    # Mengambil negara pembeli
     country = row.get("Country") or row.get("country") or "Unknown"
 
-    # Current UTC timestamp when the event is emitted by the streaming simulator
+    # Waktu sekarang (UTC) saat event dipancarkan oleh kasir simulator
     current_ts = datetime.now(timezone.utc).isoformat()
 
+    # Mengembalikan payload dictionary yang siap diserialisasi ke JSON
     return {
         "Invoice": str(invoice).strip(),
         "StockCode": str(stock_code).strip(),
@@ -168,10 +250,13 @@ def normalize_record(row: dict) -> dict:
         "Price": price,
         "CustomerID": str(customer_id).strip(),
         "Country": str(country).strip(),
-        "current_timestamp": current_ts,
+        "current_timestamp": current_ts,   # Waktu emit asli event
     }
 
 
+# ==============================================================================
+# 8. FUNGSI STREAMING DATA UTAMA (LOOP PENGIRIMAN DATA)
+# ==============================================================================
 def stream_data(
     producer,
     topic: str,
@@ -181,85 +266,108 @@ def stream_data(
     max_delay: float = 1.0,
     max_messages: int = 0,
 ):
-    """Read CSV line-by-line and emit JSON payloads to Kafka with realistic delays."""
-    total_sent = 0
-    cycle = 1
+    """
+    Membaca CSV baris-demi-baris dan memancarkan payload JSON ke topik Kafka
+    dengan jeda acak natural (0.2s - 1.0s).
+    
+    Penjelasan Parameter:
+    - producer: Instance KafkaProducer yang aktif.
+    - topic: Nama topik tujuan di Kafka.
+    - filepath: Lokasi file data CSV sumber.
+    - continuous_loop: Jika True, data akan terus diulang (loop) saat mencapai akhir file agar simulasi 24/7 tetap berjalan.
+    - min_delay, max_delay: Rentang waktu jeda antar event dalam detik.
+    - max_messages: Batas maksimum pesan yang dikirim (0 artinya tanpa batas).
+    """
+    total_sent = 0  # Akumulator jumlah total transaksi yang berhasil dikirim
+    cycle = 1       # Menghitung siklus perulangan pembacaan dataset
 
-    logger.info(f"Starting real-time streaming to topic '{topic}' from '{filepath}'")
-    logger.info(f"Delay range: {min_delay}s - {max_delay}s | Continuous loop: {continuous_loop}")
+    logger.info(f"Memulai streaming real-time ke topik '{topic}' dari file '{filepath}'")
+    logger.info(f"Rentang jeda: {min_delay}s - {max_delay}s | Mode perulangan 24/7: {continuous_loop}")
 
     try:
         while True:
-            logger.info(f"--- Streaming Cycle #{cycle} ---")
+            logger.info(f"--- Memulai Siklus Data #{cycle} ---")
             with open(filepath, "r", encoding="utf-8", errors="replace") as csv_file:
+                # DictReader memetakan setiap baris CSV langsung menjadi kamus Python {kolom: nilai}
                 reader = csv.DictReader(csv_file)
                 for row_idx, raw_row in enumerate(reader, start=1):
+                    # 1. Normalisasi dan beri stempel waktu aktual
                     payload = normalize_record(raw_row)
 
-                    # Send to Kafka topic
+                    # 2. Kirim pesan ke Kafka (asinkron)
                     future = producer.send(topic, value=payload)
                     total_sent += 1
 
-                    # Log message info
+                    # 3. Tampilkan informasi event di konsol terminal
                     logger.info(
-                        f"Sent #{total_sent:05d} | Topic: {topic} | "
+                        f"Terkirim #{total_sent:05d} | Topik: {topic} | "
                         f"Invoice: {payload['Invoice']} | "
-                        f"Item: {payload['Description'][:28]}... | "
-                        f"Qty: {payload['Quantity']} | Price: ${payload['Price']} | "
-                        f"Country: {payload['Country']} | "
-                        f"Timestamp: {payload['current_timestamp']}"
+                        f"Barang: {payload['Description'][:25]}... | "
+                        f"Qty: {payload['Quantity']} | Harga: ${payload['Price']} | "
+                        f"Negara: {payload['Country']} | "
+                        f"Waktu: {payload['current_timestamp']}"
                     )
 
+                    # Cek apakah batas kuota pesan tercapai
                     if max_messages > 0 and total_sent >= max_messages:
-                        logger.info(f"Reached specified limit of {max_messages} messages.")
+                        logger.info(f"Mencapai batas yang ditentukan ({max_messages} pesan). Menghentikan streaming.")
                         return
 
-                    # Realistic delay between events (0.2 to 1.0 seconds as required)
+                    # 4. Simulasi jeda waktu natural antar pembeli (0.2 hingga 1.0 detik)
                     delay = random.uniform(min_delay, max_delay)
                     time.sleep(delay)
 
+            # Jika mode loop dimatikan oleh siswa lewat parameter --no-loop
             if not continuous_loop:
-                logger.info("Reached end of dataset and loop mode is disabled. Finishing stream.")
+                logger.info("Mencapai baris terakhir dataset dan mode loop dinonaktifkan. Pengiriman selesai.")
                 break
 
             cycle += 1
-            logger.info("Dataset iteration completed. Looping dataset for continuous 24/7 streaming...")
+            logger.info("Satu iterasi dataset selesai dibaca. Mengulang kembali untuk streaming kontinu 24/7...")
             time.sleep(1.0)
 
     except KeyboardInterrupt:
-        logger.info("\nStreaming interrupted by user (Ctrl+C). Flushing producer buffer...")
+        logger.info("\nStreaming dihentikan secara manual oleh pengguna (Ctrl+C). Mengosongkan buffer producer...")
     finally:
+        # PENTING: Mengosongkan memori buffer dan menutup koneksi socket secara bersih
         producer.flush()
         producer.close()
-        logger.info(f"Producer closed cleanly. Total events streamed: {total_sent}")
+        logger.info(f"Koneksi producer ditutup dengan aman. Total transaksi yang dialirkan: {total_sent}")
 
 
+# ==============================================================================
+# 9. TITIK MASUK UTAMA PROGRAM (ENTRY POINT & CLI PARSER)
+# ==============================================================================
 def main():
-    parser = argparse.ArgumentParser(description="Streaming Producer Simulator for Apache Kafka")
-    parser.add_argument("--config", default="config.ini", help="Path to config.ini file")
-    parser.add_argument("--topic", default=None, help="Kafka topic name")
-    parser.add_argument("--bootstrap-servers", default=None, help="Kafka bootstrap servers")
-    parser.add_argument("--file", default=None, help="Path to CSV dataset")
-    parser.add_argument("--min-delay", type=float, default=0.2, help="Minimum delay between messages in seconds")
-    parser.add_argument("--max-delay", type=float, default=1.0, help="Maximum delay between messages in seconds")
-    parser.add_argument("--max-messages", type=int, default=0, help="Limit number of messages (0 for unlimited)")
-    parser.add_argument("--no-loop", action="store_true", help="Do not loop dataset indefinitely")
+    """
+    Titik masuk utama skrip. Mendukung argumen baris perintah kustom untuk fleksibilitas praktikum siswa.
+    Contoh: python3 producer_simulator.py --min-delay 0.1 --max-delay 0.5
+    """
+    parser = argparse.ArgumentParser(description="Streaming Producer Simulator untuk Apache Kafka")
+    parser.add_argument("--config", default="config.ini", help="Jalur ke file konfigurasi config.ini")
+    parser.add_argument("--topic", default=None, help="Nama topik Kafka tujuan")
+    parser.add_argument("--bootstrap-servers", default=None, help="Alamat broker Kafka (host:port)")
+    parser.add_argument("--file", default=None, help="Jalur ke berkas dataset CSV")
+    parser.add_argument("--min-delay", type=float, default=0.2, help="Jeda minimum antar pesan dalam detik")
+    parser.add_argument("--max-delay", type=float, default=1.0, help="Jeda maksimum antar pesan dalam detik")
+    parser.add_argument("--max-messages", type=int, default=0, help="Batasi jumlah pesan (0 untuk tanpa batas)")
+    parser.add_argument("--no-loop", action="store_true", help="Jangan mengulang dataset setelah baris terakhir")
 
     args = parser.parse_args()
 
-    # Load configuration
+    # 1. Pemuatan konfigurasi sistem
     cfg = load_configurations(args.config)
     topic = args.topic or cfg["topic"]
     bootstrap_servers = args.bootstrap_servers or cfg["bootstrap_servers"]
     csv_filepath = args.file or cfg["csv_filepath"]
 
-    # Verify or generate dataset
+    # 2. Verifikasi ketersediaan dataset
     resolved_filepath = ensure_dataset_exists(csv_filepath)
 
-    # Initialize Kafka Producer
+    # 3. Buat koneksi ke broker Kafka
     producer = create_kafka_producer(bootstrap_servers)
 
-    # Start Streaming
+    # 4. Jalankan pengaliran data streaming
     stream_data(
         producer=producer,
         topic=topic,
@@ -271,5 +379,6 @@ def main():
     )
 
 
+# Menjalankan fungsi main() hanya jika skrip dieksekusi secara langsung (bukan saat di-import modul lain)
 if __name__ == "__main__":
     main()

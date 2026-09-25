@@ -1,86 +1,135 @@
+# ==============================================================================
+# DOCKER COMPOSE CONFIGURATION (docker-compose.yml)
+# ==============================================================================
+# File orkestrasi untuk menyalakan 6 layanan container data engineering:
+# 1. zookeeper      : Pengelola metadata & koordinasi cluster Kafka
+# 2. kafka          : Distributed message queue (broker topik retail_stream)
+# 3. postgres       : Database relasional target penyimpanan data
+# 4. pgadmin        : Web UI visual untuk eksplorasi dan monitoring database
+# 5. spark_consumer : Aplikasi PySpark Structured Streaming (ETL Engine)
+# 6. producer       : Simulator kasir e-commerce yang memancarkan data 24/7
+# ==============================================================================
+
 networks:
+  # Jaringan virtual terisolasi tipe bridge agar seluruh container dapat saling
+  # berkomunikasi hanya dengan memanggil nama servicenya (DNS bawaan Docker).
   streaming_network:
     name: streaming_network
     driver: bridge
 
 services:
+  # ----------------------------------------------------------------------------
+  # 1. SERVICE ZOOKEEPER
+  # ----------------------------------------------------------------------------
   zookeeper:
     image: confluentinc/cp-zookeeper:7.3.0
     container_name: zookeeper
     environment:
+      # Port internal Zookeeper untuk melayani koneksi client Kafka
       ZOOKEEPER_CLIENT_PORT: 2181
+      # Interval detak jantung (heartbeat) dalam milidetik
       ZOOKEEPER_TICK_TIME: 2000
+      # Membatasi alokasi RAM JVM agar hemat memori di laptop siswa (Max 256MB)
       KAFKA_HEAP_OPTS: "-Xmx256M -Xms128M"
     ports:
+      # Format pemetaan port: "PORT_HOST:PORT_CONTAINER"
+      # Nilai default 2181 dapat diganti secara dinamis melalui file .env
       - "${ZOOKEEPER_PORT:-2181}:2181"
     networks:
       - streaming_network
     restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # 2. SERVICE APACHE KAFKA BROKER
+  # ----------------------------------------------------------------------------
   kafka:
     image: confluentinc/cp-kafka:7.3.0
     container_name: kafka
     depends_on:
-      - zookeeper
+      - zookeeper  # Kafka wajib menunggu Zookeeper aktif terlebih dahulu
     ports:
+      # Port 9092 diekspos ke host agar bisa diakses dari laptop siswa
       - "${KAFKA_PORT:-9092}:9092"
+      # Port 29092 untuk komunikasi internal antar container di Docker network
       - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
+      # Alamat koneksi ke Zookeeper di dalam jaringan Docker
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      # Memetakan protokol pendengar (listener protocol)
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      # Mengumumkan alamat Kafka:
+      # - PLAINTEXT://kafka:29092 untuk container di dalam Docker
+      # - PLAINTEXT_HOST://localhost:9092 untuk aplikasi dari luar Docker
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:${KAFKA_PORT:-9092}
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # Mengizinkan pembuatan topik secara otomatis jika belum dibuat sebelumnya
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Pembatasan alokasi RAM JVM Kafka (Max 512MB) agar ringan
       KAFKA_HEAP_OPTS: "-Xmx512M -Xms256M"
     networks:
       - streaming_network
     restart: unless-stopped
 
-
+  # ----------------------------------------------------------------------------
+  # 3. SERVICE POSTGRESQL DATABASE
+  # ----------------------------------------------------------------------------
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine  # Menggunakan versi Alpine yang sangat ringan
     container_name: postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
       POSTGRES_DB: ${POSTGRES_DB:-retail_db}
     ports:
+      # Port 5432 default; dapat diubah ke 5433 lewat .env jika bentrok
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
+      # Volume persisten agar data transaksi tidak hilang saat container dimatikan
       - postgres_data:/var/lib/postgresql/data
+      # Me-mount folder init-db agar skrip 01-init.sql otomatis dieksekusi saat startup
       - ./init-db:/docker-entrypoint-initdb.d
     networks:
       - streaming_network
     healthcheck:
+      # Menguji kesiapan PostgreSQL menerima koneksi query SQL
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-retail_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # 4. SERVICE PGADMIN 4 (WEB GUI MONITORING)
+  # ----------------------------------------------------------------------------
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: pgadmin
     depends_on:
       postgres:
+        # Menunggu database berstatus 'healthy' (benar-benar siap) sebelum menyalakan Web UI
         condition: service_healthy
     environment:
       PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
       PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
       PGADMIN_CONFIG_SERVER_MODE: "False"
     ports:
+      # Mengakses antarmuka web pgAdmin di browser melalui port 5050
       - "${PGADMIN_PORT:-5050}:80"
     volumes:
       - pgadmin_data:/var/lib/pgadmin
+      # Auto-register koneksi ke server PostgreSQL agar siswa tidak perlu input manual
       - ./pgadmin/servers.json:/pgadmin4/servers.json
     networks:
       - streaming_network
     restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # 5. SERVICE PYSPARK STRUCTURED STREAMING (CONSUMER & ETL)
+  # ----------------------------------------------------------------------------
   spark_consumer:
     build:
       context: .
@@ -91,24 +140,28 @@ services:
       kafka:
         condition: service_started
       postgres:
+        # Wajib menunggu PostgreSQL siap melayani query JDBC agar tidak connection refused
         condition: service_healthy
     environment:
-      PYTHONUNBUFFERED: "1"
-      KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"
+      PYTHONUNBUFFERED: "1"                         # Menampilkan log print langsung tanpa buffering
+      KAFKA_BOOTSTRAP_SERVERS: "kafka:29092"         # Alamat Kafka internal
       KAFKA_TOPIC: "retail_stream"
-      POSTGRES_HOST: "postgres"
+      POSTGRES_HOST: "postgres"                      # Host database (nama service di Docker)
       POSTGRES_PORT: "5432"
       POSTGRES_DB: "${POSTGRES_DB:-retail_db}"
       POSTGRES_USER: "${POSTGRES_USER:-postgres}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgrespassword}"
       POSTGRES_TABLE: "retail_transactions"
       CHECKPOINT_DIR: "temp/checkpoints/docker_stream"
-      SPARK_DRIVER_MEMORY: "512m"
-      SPARK_EXECUTOR_MEMORY: "512m"
+      SPARK_DRIVER_MEMORY: "512m"                    # Pembatasan alokasi RAM Spark Driver
+      SPARK_EXECUTOR_MEMORY: "512m"                  # Pembatasan alokasi RAM Spark Executor
     networks:
       - streaming_network
     restart: unless-stopped
 
+  # ----------------------------------------------------------------------------
+  # 6. SERVICE EVENT PRODUCER SIMULATOR
+  # ----------------------------------------------------------------------------
   producer:
     build:
       context: .
@@ -127,6 +180,9 @@ services:
       - streaming_network
     restart: unless-stopped
 
+# ==============================================================================
+# DEFINISI NAMED VOLUMES (PENYIMPANAN PERSISTEN)
+# ==============================================================================
 volumes:
-  postgres_data:
-  pgadmin_data:
+  postgres_data:   # Menyimpan data tabel, indeks, dan view database
+  pgadmin_data:    # Menyimpan sesi dan preferensi dashboard pgAdmin
